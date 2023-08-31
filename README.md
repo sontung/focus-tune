@@ -32,10 +32,10 @@ cd datasets
 ./setup_7scenes.py --poses pgt
 ``` 
 
+3D models must be downloaded from [here](https://github.com/tsattler/visloc_pseudo_gt_limitations), unzip them to the parent directory of this repo.
+
 ### Cambridge Landmarks:
-
-We used a single variant of these datasets. Simply run:
-
+To download the dataset along with the 3D models:
 ```shell
 cd datasets
 # Downloads the data to datasets/Cambridge_{GreatCourt, KingsCollege, ...}
@@ -43,11 +43,6 @@ cd datasets
 ```
 
 ## Usage
-
-We provide scripts to train and evaluate ACE scene coordinate regression networks.
-In the following sections we'll detail some of the main command line options that can be used to customize the
-behavior of both the training and the pose estimation script.
-
 ### ACE Training
 
 The ACE scene-specific coordinate regression head for a scene can be trained using the `train_ace.py` script.
