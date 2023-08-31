@@ -1,0 +1,28 @@
+__pycache__/
+.idea/
+
+# Dataset files.
+datasets/7scenes_*
+datasets/12scenes_*
+datasets/Cambridge_*
+datasets/wayspots_*
+datasets/pgt_*
+datasets/visloc_pseudo_gt_limitations
+datasets/*
+
+*.lprof
+*.png
+test/*
+*.pdf
+test3/*
+labels_test/*
+labels_train/*
+
+# Outputs.
+output/
+
+ace_models.tar.gz
+ace_models/*
+dsacstar/build
+dsacstar/dist
+dsacstar/dsacstar.egg-info
