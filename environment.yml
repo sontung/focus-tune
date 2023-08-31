@@ -1,4 +1,4 @@
-name: ace
+name: focus_tune
 channels:
   - pytorch
   - nvidia

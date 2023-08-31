@@ -4,11 +4,17 @@ A large part of the code is built upon the [ACE](https://github.com/nianticlabs/
 ## Installation
 ```shell
 conda env create -f environment.yml
-conda activate ace
+conda activate focus_tune
 conda install -c conda-forge pykdtree
 ```
+or if you use [Mamba](https://mamba.readthedocs.io/en/latest/mamba-installation.html).
+```shell
+mamba env create -f environment.yml
+mamba activate focus_tune
+mamba install -c conda-forge pykdtree
+```
 
-**All the following commands in this file need to run in the `ace` environment.**
+**All the following commands in this file need to run in the `focus_tune` environment.**
 
 ```shell
 cd dsacstar
