@@ -18,7 +18,6 @@ from ace_util import get_pixel_grid, to_homogeneous
 from ace_loss import ReproLoss
 from ace_network import Regressor
 from dataset import CamLocDataset
-from ace_util import augment_mask
 import ace_vis_util as vutil
 from ace_visualizer import ACEVisualizer
 

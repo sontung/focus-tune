@@ -10,8 +10,8 @@ conda install -c conda-forge pykdtree
 or if you use [Mamba](https://mamba.readthedocs.io/en/latest/mamba-installation.html).
 ```shell
 mamba env create -f environment.yml
-mamba activate focus_tune
-mamba install -c conda-forge pykdtree
+conda activate focus_tune
+mamba install -c conda-forge pykdtree tqdm
 ```
 
 **All the following commands in this file need to run in the `focus_tune` environment.**
