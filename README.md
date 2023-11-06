@@ -1,11 +1,11 @@
-This repository contains the code associated to the Focus-Tune paper.
+This repository contains the code associated with our WACV 2024 paper.
 A large part of the code is built upon the [ACE](https://github.com/nianticlabs/ace) code.
 
 ## Installation
 ```shell
 conda env create -f environment.yml
 conda activate focus_tune
-conda install -c conda-forge pykdtree
+conda install -c conda-forge pykdtree tqdm
 ```
 or if you use [Mamba](https://mamba.readthedocs.io/en/latest/mamba-installation.html).
 ```shell
