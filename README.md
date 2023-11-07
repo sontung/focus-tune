@@ -1,4 +1,4 @@
-This repository contains the code associated with our WACV 2024 paper.
+This repository contains the code associated with our WACV 2024 paper ([arxiv](https://arxiv.org/abs/2311.02872)).
 A large part of the code is built upon the [ACE](https://github.com/nianticlabs/ace) code.
 
 ## Installation
