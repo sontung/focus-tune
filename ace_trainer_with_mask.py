@@ -21,8 +21,6 @@ from ace_util import get_pixel_grid, to_homogeneous, read_nvm_file
 from ace_loss import ReproLoss
 from ace_network import Regressor
 from dataset import CamLocDataset
-import ace_vis_util as vutil
-from ace_visualizer import ACEVisualizer
 
 _logger = logging.getLogger(__name__)
 
@@ -666,7 +664,7 @@ class TrainerACE:
         loss /= batch_size
 
         # We need to check if the step actually happened, since the scaler might skip optimisation steps.
-        old_optimizer_step = self.optimizer._step_count
+        old_optimizer_step = self.get_step_count()
 
         # Optimization steps.
         self.optimizer.zero_grad(set_to_none=True)
@@ -678,18 +676,6 @@ class TrainerACE:
             # Print status.
             time_since_start = time.time() - self.training_start
             fraction_valid = float(valid_mask_b1.sum() / batch_size)
-
-            # mse_err = pred_scene_coords_b31.clone().detach().squeeze().cpu() - xyz_gt
-            # mse_err = torch.mean(torch.abs(mse_err), 1)
-            # mse_curr = torch.mean(mse_err)
-            # self.mse_errors[xyz_gt_indices] = mse_err
-            # for idx, pid in enumerate(xyz_gt_indices):
-            #     self.error_tracker.setdefault(pid.item(), []).append(
-            #         mse_err[idx].item()
-            #     )
-            # mse_err = torch.mean(self.mse_errors[self.mse_errors > -1])
-            mse_err = -1
-            mse_curr = -1
             _logger.info(
                 f"Iteration: {self.iteration:6d} / Epoch {self.epoch:03d}|{self.options.epochs:03d}, "
                 f"Loss: {loss:.1f}, Valid: {fraction_valid * 100:.1f}%, Time: {time_since_start:.2f}s"
@@ -697,8 +683,18 @@ class TrainerACE:
 
         # Only step if the optimizer stepped and if we're not
         # over-stepping the total_steps supported by the scheduler.
-        if old_optimizer_step < self.optimizer._step_count < self.scheduler.total_steps:
+        if old_optimizer_step < self.get_step_count() < self.scheduler.total_steps:
             self.scheduler.step()
+
+    def get_step_count(self):
+        try:
+            step_count = self.optimizer.state[
+                self.optimizer.param_groups[0]["params"][0]
+            ]["step"]
+
+        except KeyError:
+            step_count = 0
+        return int(step_count)
 
     def save_model(self):
         # NOTE: This would save the whole regressor (encoder weights included) in full precision floats (~30MB).

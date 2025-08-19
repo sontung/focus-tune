@@ -1,11 +1,13 @@
 # Copyright © Niantic, Inc. 2022.
 
 import logging
+import math
 import os
 import random
 import sys
 import time
 
+import cv2
 import numpy as np
 import torch
 import torch.optim as optim
@@ -13,13 +15,12 @@ import torchvision.transforms.functional as TF
 from torch.cuda.amp import GradScaler, autocast
 from torch.utils.data import DataLoader
 from torch.utils.data import sampler
+from tqdm import tqdm
 
 from ace_util import get_pixel_grid, to_homogeneous
 from ace_loss import ReproLoss
 from ace_network import Regressor
 from dataset import CamLocDataset
-import ace_vis_util as vutil
-from ace_visualizer import ACEVisualizer
 
 _logger = logging.getLogger(__name__)
 
@@ -148,36 +149,12 @@ class TrainerACE:
         # Will be filled at the beginning of the training process.
         self.training_buffer = None
 
-        # Generate video of training process
-        if self.options.render_visualization:
-            # infer rendering folder from map file name
-            target_path = vutil.get_rendering_target_path(
-                self.options.render_target_path, self.options.output_map_file
-            )
-            self.ace_visualizer = ACEVisualizer(
-                target_path,
-                self.options.render_flipped_portrait,
-                self.options.render_map_depth_filter,
-                mapping_vis_error_threshold=self.options.render_map_error_threshold,
-            )
-        else:
-            self.ace_visualizer = None
-
     def train(self):
         """
         Main training method.
 
         Fills a feature buffer using the pretrained encoder and subsequently trains a scene coordinate regression head.
         """
-
-        if self.ace_visualizer is not None:
-            # Setup the ACE render pipeline.
-            self.ace_visualizer.setup_mapping_visualisation(
-                self.dataset.pose_files,
-                self.dataset.rgb_files,
-                self.iterations // self.iterations_output + 1,
-                self.options.render_camera_z_offset,
-            )
 
         creating_buffer_time = 0.0
         training_time = 0.0
@@ -208,24 +185,6 @@ class TrainerACE:
         )
         # Save trained model.
         self.save_model()
-
-        if self.ace_visualizer is not None:
-            # Finalize the rendering by animating the fully trained map.
-            vis_dataset = CamLocDataset(
-                root_dir=self.options.scene / "train",
-                mode=0,
-                use_half=self.options.use_half,
-                image_height=self.options.image_resolution,
-                augment=False,
-            )  # No data augmentation when visualizing the map
-
-            vis_dataset_loader = torch.utils.data.DataLoader(
-                vis_dataset,
-                shuffle=False,  # Process data in order for a growing effect later when rendering
-                num_workers=self.num_data_loader_workers,
-            )
-
-            self.ace_visualizer.finalize_mapping(self.regressor, vis_dataset_loader)
 
     def create_training_buffer(self):
         # Disable benchmarking, since we have variable tensor sizes.
@@ -575,14 +534,6 @@ class TrainerACE:
                 f"Iteration: {self.iteration:6d} / Epoch {self.epoch:03d}|{self.options.epochs:03d}, "
                 f"Loss: {loss:.1f}, Valid: {fraction_valid * 100:.1f}%, Time: {time_since_start:.2f}s"
             )
-
-            if self.ace_visualizer is not None:
-                vis_scene_coords = (
-                    pred_scene_coords_b31.detach().cpu().squeeze().numpy()
-                )
-                vis_errors = reprojection_error_b1.detach().cpu().squeeze().numpy()
-                self.ace_visualizer.render_mapping_frame(vis_scene_coords, vis_errors)
-
         # Only step if the optimizer stepped and if we're not over-stepping the total_steps supported by the scheduler.
         if old_optimizer_step < self.optimizer._step_count < self.scheduler.total_steps:
             self.scheduler.step()

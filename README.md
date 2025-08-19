@@ -16,11 +16,6 @@ mamba install -c conda-forge pykdtree tqdm
 
 **All the following commands in this file need to run in the `focus_tune` environment.**
 
-```shell
-cd dsacstar
-python setup.py install
-```
-
 ## Datasets
 
 ### 7 scenes:
@@ -51,7 +46,7 @@ Basic usage:
 ```shell
 ./train_ace.py <scene path> <output map name> --constraint_mask 1 --sampling_radius 5
 # Example:
-./train_ace.py datasets/7scenes_chess output/7scenes_chess.pt --constraint_mask 1 --constraint_mask 1 --sampling_radius 5
+./train_ace.py datasets/pgt_7scenes_chess output/7scenes_chess.pt --constraint_mask 1 --sampling_radius 5
 ```
 
 ### ACE Evaluation

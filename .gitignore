@@ -8,6 +8,7 @@ datasets/Cambridge_*
 datasets/wayspots_*
 datasets/pgt_*
 datasets/visloc_pseudo_gt_limitations
+*.zip
 
 *.lprof
 *.png

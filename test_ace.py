@@ -1,32 +1,57 @@
 #!/usr/bin/env python3
 # Copyright © Niantic, Inc. 2022.
-
+import open3d as o3d
+import faiss
 import argparse
 import logging
 import math
+import joblib
 import time
 from distutils.util import strtobool
 from pathlib import Path
-
+import poselib
 import cv2
 import numpy as np
 import torch
+from pykdtree.kdtree import KDTree
 from torch.cuda.amp import autocast
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-import dsacstar
 from ace_network import Regressor
+from ace_util import get_pixel_grid, read_nvm_file
 from dataset import CamLocDataset
 
-import ace_vis_util as vutil
-from ace_visualizer import ACEVisualizer
 
 _logger = logging.getLogger(__name__)
 
 
 def _strtobool(x):
     return bool(strtobool(x))
+
+
+def localize_pose_lib(pairs, f, c1, c2, max_error=16.0):
+    """
+    using pose lib to compute (usually best)
+    """
+    camera = {
+        "model": "SIMPLE_PINHOLE",
+        "height": int(c1 * 2),
+        "width": int(c2 * 2),
+        "params": [f, c1, c2],
+    }
+    object_points = []
+    image_points = []
+    for xy, xyz in pairs:
+        xyz = np.array(xyz).reshape((3, 1))
+        xy = np.array(xy)
+        xy = xy.reshape((2, 1)).astype(np.float64)
+        image_points.append(xy)
+        object_points.append(xyz)
+    pose, info = poselib.estimate_absolute_pose(
+        image_points, object_points, camera, {"max_reproj_error": max_error}, {}
+    )
+    return pose, info
 
 
 if __name__ == "__main__":
@@ -58,6 +83,12 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
+        "--set",
+        default="test",
+        help="file containing pre-trained encoder weights",
+    )
+
+    parser.add_argument(
         "--session",
         "-sid",
         default="",
@@ -67,101 +98,6 @@ if __name__ == "__main__":
 
     parser.add_argument(
         "--image_resolution", type=int, default=480, help="base image resolution"
-    )
-
-    # ACE is RGB-only, no need for this param.
-    # parser.add_argument('--mode', '-m', type=int, default=1, choices=[1, 2], help='test mode: 1 = RGB, 2 = RGB-D')
-
-    # DSACStar RANSAC parameters. ACE Keeps them at default.
-    parser.add_argument(
-        "--hypotheses",
-        "-hyps",
-        type=int,
-        default=64,
-        help="number of hypotheses, i.e. number of RANSAC iterations",
-    )
-
-    parser.add_argument(
-        "--threshold",
-        "-t",
-        type=float,
-        default=10,
-        help="inlier threshold in pixels (RGB) or centimeters (RGB-D)",
-    )
-
-    parser.add_argument(
-        "--inlieralpha",
-        "-ia",
-        type=float,
-        default=100,
-        help="alpha parameter of the soft inlier count; controls the softness of the "
-        "hypotheses score distribution; lower means softer",
-    )
-
-    parser.add_argument(
-        "--maxpixelerror",
-        "-maxerrr",
-        type=float,
-        default=100,
-        help="maximum reprojection (RGB, in px) or 3D distance (RGB-D, in cm) error when checking "
-        "pose consistency towards all measurements; error is clamped to this value for stability",
-    )
-
-    # Params for the visualization. If enabled, it will slow down relocalisation considerably. But you get a nice video :)
-    parser.add_argument(
-        "--render_visualization",
-        type=_strtobool,
-        default=False,
-        help="create a video of the mapping process",
-    )
-
-    parser.add_argument(
-        "--render_target_path",
-        type=Path,
-        default="renderings",
-        help="target folder for renderings, visualizer will create a subfolder with the map name",
-    )
-
-    parser.add_argument(
-        "--render_flipped_portrait",
-        type=_strtobool,
-        default=False,
-        help="flag for wayspots dataset where images are sideways portrait",
-    )
-
-    parser.add_argument(
-        "--render_sparse_queries",
-        type=_strtobool,
-        default=False,
-        help="set to true if your queries are not a smooth video",
-    )
-
-    parser.add_argument(
-        "--render_pose_error_threshold",
-        type=int,
-        default=20,
-        help="pose error threshold for the visualisation in cm/deg",
-    )
-
-    parser.add_argument(
-        "--render_map_depth_filter",
-        type=int,
-        default=10,
-        help="to clean up the ACE point cloud remove points too far away",
-    )
-
-    parser.add_argument(
-        "--render_camera_z_offset",
-        type=int,
-        default=4,
-        help="zoom out of the scene by moving render camera backwards, in meters",
-    )
-
-    parser.add_argument(
-        "--render_frame_skip",
-        type=int,
-        default=1,
-        help="skip every xth frame for long and dense query sequences",
     )
 
     opt = parser.parse_args()
@@ -228,48 +164,22 @@ if __name__ == "__main__":
     pct2 = 0
     pct1 = 0
 
-    # Generate video of training process
-    if opt.render_visualization:
-        # infer rendering folder from map file name
-        target_path = vutil.get_rendering_target_path(
-            opt.render_target_path, opt.network
-        )
-        ace_visualizer = ACEVisualizer(
-            target_path,
-            opt.render_flipped_portrait,
-            opt.render_map_depth_filter,
-            reloc_vis_error_threshold=opt.render_pose_error_threshold,
-        )
-
-        # we need to pass the training set in case the visualiser has to regenerate the map point cloud
-        trainset = CamLocDataset(
-            scene_path / "train",
-            mode=0,  # Default for ACE, we don't need scene coordinates/RGB-D.
-            image_height=opt.image_resolution,
-        )
-
-        # Setup dataloader. Batch size 1 by default.
-        trainset_loader = DataLoader(trainset, shuffle=False, num_workers=6)
-
-        ace_visualizer.setup_reloc_visualisation(
-            frame_count=len(testset),
-            data_loader=trainset_loader,
-            network=network,
-            camera_z_offset=opt.render_camera_z_offset,
-            reloc_frame_skip=opt.render_frame_skip,
-        )
-    else:
-        ace_visualizer = None
+    pixel_grid_2HW = get_pixel_grid(network.OUTPUT_SUBSAMPLE)
 
     # Testing loop.
     testing_start_time = time.time()
+
+    # xyz_map, image2points, image2name = read_nvm_file(opt.scene / "reconstruction.nvm")
+    # name2id = {v: k for k, v in image2name.items()}
+    count = 0
+
     with torch.no_grad():
         for (
             image_B1HW,
-            _,
+            image_ori,
             _,
             gt_pose_B44,
-            _,
+            gt_inv_pose_B44,
             _,
             intrinsics_B33,
             _,
@@ -286,6 +196,7 @@ if __name__ == "__main__":
 
             # Predict scene coordinates.
             with autocast(enabled=True):
+                features_BCHW = network.get_features(image_B1HW)
                 scene_coordinates_B3HW = network(image_B1HW)
 
             # We need them on the CPU to run RANSAC.
@@ -297,11 +208,18 @@ if __name__ == "__main__":
                 (
                     scene_coordinates_3HW,
                     gt_pose_44,
+                    gt_inv_pose_34,
                     intrinsics_33,
                     frame_path,
                 ),
             ) in enumerate(
-                zip(scene_coordinates_B3HW, gt_pose_B44, intrinsics_B33, filenames)
+                zip(
+                    scene_coordinates_B3HW,
+                    gt_pose_B44,
+                    gt_inv_pose_B44,
+                    intrinsics_B33,
+                    filenames,
+                )
             ):
                 # Extract focal length and principal point from the intrinsics matrix.
                 focal_length = intrinsics_33[0, 0].item()
@@ -310,25 +228,36 @@ if __name__ == "__main__":
                 # We support a single focal length.
                 assert torch.allclose(intrinsics_33[0, 0], intrinsics_33[1, 1])
 
+                xyz_arr = scene_coordinates_B3HW.view(3, -1).permute([1, 0]).numpy()
+                uv_arr = (
+                    pixel_grid_2HW[
+                        :,
+                        0 : scene_coordinates_B3HW.size(2),
+                        0 : scene_coordinates_B3HW.size(3),
+                    ]
+                    .clone()
+                    .view(2, -1)
+                    .permute([1, 0])
+                    .numpy()
+                )
+                # _, ind_pred = index.search(xyz_arr, 1)
+                # mask = np.bitwise_not(np.isin(ind_pred[:, 0], bad_indices))
+                # xyz_arr = xyz_arr[mask]
+                # uv_arr = uv_arr[mask]
+
+                pairs = []
+                for j, (x, y) in enumerate(uv_arr):
+                    xy = [x, y]
+                    xyz = xyz_arr[j]
+                    pairs.append((xy, xyz))
+                pose, info = localize_pose_lib(pairs, focal_length, ppX, ppY)
+
+                est_pose = np.vstack([pose.Rt, [0, 0, 0, 1]])
+                est_pose = np.linalg.inv(est_pose)
+                out_pose = torch.from_numpy(est_pose)
+
                 # Remove path from file name
                 frame_name = Path(frame_path).name
-
-                # Allocate output variable.
-                out_pose = torch.zeros((4, 4))
-
-                # Compute the pose via RANSAC.
-                inlier_count = dsacstar.forward_rgb(
-                    scene_coordinates_3HW.unsqueeze(0),
-                    out_pose,
-                    opt.hypotheses,
-                    opt.threshold,
-                    focal_length,
-                    ppX,
-                    ppY,
-                    opt.inlieralpha,
-                    opt.maxpixelerror,
-                    network.OUTPUT_SUBSAMPLE,
-                )
 
                 # Calculate translation error.
                 t_err = float(torch.norm(gt_pose_44[0:3, 3] - out_pose[0:3, 3]))
@@ -342,19 +271,6 @@ if __name__ == "__main__":
                 r_err = cv2.Rodrigues(r_err)[0]
                 # Extract the angle.
                 r_err = np.linalg.norm(r_err) * 180 / math.pi
-
-                # _logger.info(
-                #     f"Rotation Error: {r_err:.2f}deg, Translation Error: {t_err * 100:.1f}cm"
-                # )
-
-                if ace_visualizer is not None:
-                    ace_visualizer.render_reloc_frame(
-                        query_pose=gt_pose_44.numpy(),
-                        query_file=frame_path,
-                        est_pose=out_pose.numpy(),
-                        est_error=max(r_err, t_err * 100),
-                        sparse_query=opt.render_sparse_queries,
-                    )
 
                 # Save the errors.
                 rErrs.append(r_err)
@@ -390,11 +306,13 @@ if __name__ == "__main__":
                     f"{frame_name} "
                     f"{q_w} {q_xyz[0].item()} {q_xyz[1].item()} {q_xyz[2].item()} "
                     f"{t[0]} {t[1]} {t[2]} "
-                    f"{r_err} {t_err} {inlier_count}\n"
+                    f"{r_err} {t_err} {0}\n"
                 )
 
             avg_batch_time += time.time() - batch_start_time
             num_batches += 1
+
+    print(count / len(testset))
 
     total_frames = len(rErrs)
     assert total_frames == len(testset)
@@ -424,7 +342,6 @@ if __name__ == "__main__":
     _logger.info(f"\t2cm/2deg: {pct2:.1f}%")
     _logger.info(f"\t1cm/1deg: {pct1:.1f}%")
 
-    _logger.info(f"Median Error: {median_rErr}deg, {median_tErr}cm")
     _logger.info(f"Median Error: {median_rErr:.1f}deg, {median_tErr:.1f}cm")
     _logger.info(f"Avg. processing time: {avg_time * 1000:4.1f}ms")
 
