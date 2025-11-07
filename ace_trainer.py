@@ -1,11 +1,12 @@
 # Copyright © Niantic, Inc. 2022.
-
+import gc
 import logging
 import math
 import os
 import random
 import sys
 import time
+from tkinter.scrolledtext import example
 
 import cv2
 import numpy as np
@@ -226,7 +227,7 @@ class TrainerACE:
             "features": torch.empty(
                 (self.options.training_buffer_size, self.regressor.feature_dim),
                 dtype=(torch.float32, torch.float16)[self.options.use_half],
-                device=self.device,
+                device="cpu",
             ),
             "target_px": torch.empty(
                 (self.options.training_buffer_size, 2),
@@ -248,6 +249,11 @@ class TrainerACE:
                 dtype=torch.float32,
                 device=self.device,
             ),
+            "sample_idx": torch.empty(
+                (self.options.training_buffer_size,),
+                dtype=torch.int32,
+                device=self.device,
+            ),
         }
 
         # Features are computed in evaluation mode.
@@ -258,7 +264,7 @@ class TrainerACE:
             # Iterate until the training buffer is full.
             buffer_idx = 0
             dataset_passes = 0
-
+            example_idx = 0
             while buffer_idx < self.options.training_buffer_size:
                 dataset_passes += 1
                 for (
@@ -339,7 +345,7 @@ class TrainerACE:
                         return tensor_in.transpose(0, 1).flatten(1).transpose(0, 1)
 
                     batch_data = {
-                        "features": normalize_shape(features_BCHW),
+                        "features": normalize_shape(features_BCHW).cpu(),
                         "target_px": normalize_shape(pixel_positions_B2HW),
                         "gt_poses_inv": gt_pose_inv,
                         "intrinsics": intrinsics,
@@ -367,7 +373,10 @@ class TrainerACE:
 
                     # Select the data to put in the buffer.
                     for k in batch_data:
-                        batch_data[k] = batch_data[k][sample_idxs]
+                        if k == "features":
+                            batch_data[k] = batch_data[k][sample_idxs.cpu()].cpu()
+                        else:
+                            batch_data[k] = batch_data[k][sample_idxs]
 
                     # Write to training buffer. Start at buffer_idx and end at buffer_offset - 1.
                     buffer_offset = buffer_idx + features_to_select
@@ -375,10 +384,43 @@ class TrainerACE:
                         self.training_buffer[k][buffer_idx:buffer_offset] = batch_data[
                             k
                         ]
+                    self.training_buffer["sample_idx"][
+                        buffer_idx:buffer_offset
+                    ] = example_idx
+                    example_idx += 1
 
                     buffer_idx = buffer_offset
                     if buffer_idx >= self.options.training_buffer_size:
                         break
+
+        example_indices = self.training_buffer["sample_idx"]
+        nb_unique_examples = torch.max(example_indices).item() + 1
+        light_buffer = {
+            "gt_poses_inv": torch.zeros(
+                (nb_unique_examples, 3, 4),
+                dtype=torch.float32,
+                device=self.device,
+            ),
+            "intrinsics": torch.zeros(
+                (nb_unique_examples, 3, 3),
+                dtype=torch.float32,
+                device=self.device,
+            ),
+            "intrinsics_inv": torch.zeros(
+                (nb_unique_examples, 3, 3),
+                dtype=torch.float32,
+                device=self.device,
+            ),
+        }
+        for example_idx in range(nb_unique_examples):
+            mask = example_indices == example_idx
+            for k in light_buffer:
+                light_buffer[k][example_idx] = self.training_buffer[k][mask][0]
+        for k in light_buffer:
+            del self.training_buffer[k]
+            gc.collect()
+            torch.cuda.empty_cache()
+            self.training_buffer[k] = light_buffer[k]
 
         buffer_memory = sum(
             [v.element_size() * v.nelement() for k, v in self.training_buffer.items()]
@@ -402,8 +444,6 @@ class TrainerACE:
             self.options.training_buffer_size, generator=self.training_generator
         )
 
-        ds_name = str(self.options.scene).split("/")[-1]
-
         # Iterate with mini batches.
         for batch_start in range(
             0, self.options.training_buffer_size, self.options.batch_size
@@ -416,15 +456,16 @@ class TrainerACE:
 
             # Sample indices.
             random_batch_indices = random_indices[batch_start:batch_end]
+            random_batch_indices2 = self.training_buffer["sample_idx"][random_batch_indices]
 
             # Call the training step with the sampled features and relevant metadata.
             self.training_step(
-                self.training_buffer["features"][random_batch_indices].contiguous(),
+                self.training_buffer["features"][random_batch_indices].contiguous().cuda(),
                 self.training_buffer["target_px"][random_batch_indices].contiguous(),
-                self.training_buffer["gt_poses_inv"][random_batch_indices].contiguous(),
-                self.training_buffer["intrinsics"][random_batch_indices].contiguous(),
+                self.training_buffer["gt_poses_inv"][random_batch_indices2].contiguous(),
+                self.training_buffer["intrinsics"][random_batch_indices2].contiguous(),
                 self.training_buffer["intrinsics_inv"][
-                    random_batch_indices
+                    random_batch_indices2
                 ].contiguous(),
             )
             self.iteration += 1

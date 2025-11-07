@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 # Copyright © Niantic, Inc. 2022.
-import open3d as o3d
-import faiss
+# import faiss
 import argparse
 import logging
 import math
