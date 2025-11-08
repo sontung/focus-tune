@@ -66,6 +66,27 @@ def pil_undo_resize_pad(
     torch_out_image = undo_resize_pad(torch_image, orig_size_wh, scale, padding)
     return torch_out_image
 
+def get_model():
+    parser = get_model_cli_parser(DDRNet)
+    parser = get_on_device_demo_parser(parser, add_output_dir=True)
+    parser.add_argument(
+        "--image",
+        type=str,
+        default=INPUT_IMAGE_ADDRESS,
+        help="image file path or URL",
+    )
+    args = parser.parse_args([])
+    model = demo_model_from_cli_args(DDRNet, MODEL_ID, args)
+    validate_on_device_demo_args(args, MODEL_ID)
+
+    ds_dir = "datasets/Cambridge_GreatCourt"
+    images_folder = f"{ds_dir}/train/rgb"
+
+    # Load image
+    app = DDRNetApp(model)
+    classes = [2]
+    return app
+
 # Run DDRNet end-to-end on a sample image.
 # The demo will display a image with the predicted segmentation map overlaid.
 def main(is_test: bool = False):
@@ -82,7 +103,7 @@ def main(is_test: bool = False):
     model = demo_model_from_cli_args(DDRNet, MODEL_ID, args)
     validate_on_device_demo_args(args, MODEL_ID)
 
-    ds_dir = "datasets/Cambridge_GreatCourt"
+    ds_dir = "datasets/Cambridge_StMarysChurch"
     images_folder = f"{ds_dir}/train/rgb"
     files = glob.glob(f"{images_folder}/*.png")
 
@@ -111,7 +132,7 @@ def main(is_test: bool = False):
                 selected = np.stack((rows, cols), axis=1)
 
                 # Save selected coordinates to h5 file under group per image
-                grp = h5f.create_group(f"image_{count}_class_{cls}")
+                grp = h5f.create_group(img)
                 grp.create_dataset("selected", data=selected, compression="gzip")
 
                 # Visualize with removed pixels

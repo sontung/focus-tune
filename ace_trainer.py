@@ -9,19 +9,25 @@ import time
 from tkinter.scrolledtext import example
 
 import cv2
+import h5py
 import numpy as np
 import torch
 import torch.optim as optim
 import torchvision.transforms.functional as TF
+from PIL import Image
+from pykdtree.kdtree import KDTree
+from qai_hub_models.models.ddrnet23_slim.model import DDRNet
+from qai_hub_models.utils.image_processing import pil_resize_pad
 from torch.cuda.amp import GradScaler, autocast
 from torch.utils.data import DataLoader
 from torch.utils.data import sampler
 from tqdm import tqdm
 
-from ace_util import get_pixel_grid, to_homogeneous
+from ace_util import get_pixel_grid, to_homogeneous, transform_kp
 from ace_loss import ReproLoss
 from ace_network import Regressor
 from dataset import CamLocDataset
+from segment import get_model, pil_undo_resize_pad
 
 _logger = logging.getLogger(__name__)
 
@@ -33,6 +39,25 @@ def set_seed(seed):
     torch.manual_seed(seed)
     np.random.seed(seed)
     random.seed(seed)
+
+def get_pixels_from_mask(image_ori, app):
+    image_ori = image_ori.squeeze(0).cpu().numpy().astype(np.uint8)
+    orig_image = Image.fromarray(image_ori)
+    (_, _, height, width) = DDRNet.get_input_spec()["image"][0]
+
+    image, scale, padding = pil_resize_pad(orig_image, (height, width))
+
+    # segmentation
+    mask = app.segment_image(image, raw_output=True)[0]
+    mask = np.argmax(mask, 0).astype(np.uint8)
+    mask = pil_undo_resize_pad(Image.fromarray(mask), orig_image.size, scale, padding)
+    mask = np.array(mask)[0, 0]
+
+    # process each class
+    binary_mask = (mask == 2).astype(np.uint8)
+    rows, cols = np.nonzero(binary_mask)
+    selected = np.stack((rows, cols), axis=1)
+    return selected
 
 
 class TrainerACE:
@@ -258,8 +283,10 @@ class TrainerACE:
 
         # Features are computed in evaluation mode.
         self.regressor.eval()
-
+        segment_model = get_model()
         # The encoder is pretrained, so we don't compute any gradient.
+        pbar = tqdm(total=self.options.training_buffer_size, desc="Filling buffer")
+        h5_file = h5py.File(f"{self.dataset.root_dir}/../selected_points.h5", "r")
         with torch.no_grad():
             # Iterate until the training buffer is full.
             buffer_idx = 0
@@ -282,6 +309,12 @@ class TrainerACE:
                     angle,
                     scale_factor,
                 ) in training_dataloader:
+
+                    segment_pixels = np.array(h5_file[frame_path[0]]["selected"])
+                    segment_pixels = transform_kp(segment_pixels, image_ori, angle.item(), scale_factor.item())
+                    if segment_pixels is None:
+                        continue
+
                     # Copy to device.
                     image_B1HW = image_B1HW.to(self.device, non_blocking=True)
                     image_mask_B1HW = image_mask_B1HW.to(self.device, non_blocking=True)
@@ -290,6 +323,10 @@ class TrainerACE:
                     intrinsics_inv_B33 = intrinsics_inv_B33.to(
                         self.device, non_blocking=True
                     )
+
+                    # segment_pixels = get_pixels_from_mask(image_ori, segment_model)
+                    if segment_pixels.shape[0] <= 100:
+                        continue
 
                     # Compute image features.
                     with autocast(enabled=self.options.use_half):
@@ -356,20 +393,38 @@ class TrainerACE:
                     image_mask_B1HW = image_mask_B1HW.float()
                     image_mask_N1 = normalize_shape(image_mask_B1HW)
 
+                    pixels0 = batch_data["target_px"].cpu().numpy()
+                    segment_pixels[:, [0, 1]] = segment_pixels[:, [1, 0]]
+                    tree = KDTree(segment_pixels)
+                    dists, _ = tree.query(pixels0, k=1)
+                    segment_mask = dists < 5
+                    if segment_mask.sum() < 100:
+                        continue
+                    for k in batch_data:
+                        batch_data[k] = batch_data[k][segment_mask.squeeze()]
+                    image_mask_N1 = image_mask_N1[segment_mask.squeeze()]
+
                     # Over-sample according to image mask.
                     features_to_select = self.options.samples_per_image * B
+                    features_to_select = min(features_to_select, image_mask_N1.shape[0])
                     features_to_select = min(
                         features_to_select,
                         self.options.training_buffer_size - buffer_idx,
                     )
 
                     # Sample indices uniformly, with replacement.
-                    sample_idxs = torch.multinomial(
-                        image_mask_N1.view(-1),
-                        features_to_select,
-                        replacement=False,
-                        generator=self.sampling_generator,
-                    )
+                    try:
+                        sample_idxs = torch.multinomial(
+                            image_mask_N1.view(-1),
+                            features_to_select,
+                            replacement=False,
+                            generator=self.sampling_generator,
+                        )
+                    except RuntimeError:
+                        print(image_mask_N1.sum(), segment_mask.sum())
+                        continue
+                    pbar.update(features_to_select)
+                    assert torch.max(sample_idxs).item() < batch_data["features"].shape[0]
 
                     # Select the data to put in the buffer.
                     for k in batch_data:
@@ -377,13 +432,13 @@ class TrainerACE:
                             batch_data[k] = batch_data[k][sample_idxs.cpu()].cpu()
                         else:
                             batch_data[k] = batch_data[k][sample_idxs]
-
                     # Write to training buffer. Start at buffer_idx and end at buffer_offset - 1.
                     buffer_offset = buffer_idx + features_to_select
                     for k in batch_data:
                         self.training_buffer[k][buffer_idx:buffer_offset] = batch_data[
                             k
                         ]
+
                     self.training_buffer["sample_idx"][
                         buffer_idx:buffer_offset
                     ] = example_idx

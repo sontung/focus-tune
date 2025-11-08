@@ -21,6 +21,54 @@ def get_pixel_grid(subsampling_factor):
     return subsampling_factor * (torch.stack([xx, yy]) + 0.5)
 
 
+def transform_kp(kp, image_resize, angle, scale_factor):
+    if kp.shape[0] == 0:
+        return None
+    kp = kp * scale_factor
+
+    h = image_resize.size(1)
+    w = image_resize.size(2)
+
+    translate = {"x": 0, "y": 0}
+
+    shear = {"x": -0.0, "y": -0.0}
+    scale = {"x": 1.0, "y": 1.0}
+
+    rotate = -angle
+    shift_x = w / 2 - 0.5
+    shift_y = h / 2 - 0.5
+
+    matrix_to_topleft = skimage.transform.SimilarityTransform(
+        translation=[-shift_x, -shift_y]
+    )
+    matrix_shear_y_rot = skimage.transform.AffineTransform(rotation=-np.pi / 2)
+    matrix_shear_y = skimage.transform.AffineTransform(shear=np.deg2rad(shear["y"]))
+    matrix_shear_y_rot_inv = skimage.transform.AffineTransform(rotation=np.pi / 2)
+    matrix_transforms = skimage.transform.AffineTransform(
+        scale=(scale["x"], scale["y"]),
+        translation=(translate["x"], translate["y"]),
+        rotation=np.deg2rad(rotate),
+        shear=np.deg2rad(shear["x"]),
+    )
+    matrix_to_center = skimage.transform.SimilarityTransform(
+        translation=[shift_x, shift_y]
+    )
+    matrix = (
+        matrix_to_topleft
+        + matrix_shear_y_rot
+        + matrix_shear_y
+        + matrix_shear_y_rot_inv
+        + matrix_transforms
+        + matrix_to_center
+    )
+
+    kp2 = np.copy(kp)
+    # kp2[:, [1, 0]] = kp2[:, [0, 1]]
+    kp2 = np.expand_dims(kp2, 0)
+    kp2 = cv2.transform(kp2, matrix.params[:2]).squeeze()
+
+    return kp2
+
 def to_homogeneous(input_tensor, dim=1):
     """
     Converts tensor to homogeneous coordinates by adding ones to the specified dimension
