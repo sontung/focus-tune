@@ -26,4 +26,5 @@ ace_models.tar.gz
 ace_models/*
 dsacstar/build
 dsacstar/dist
-dsacstar/dsacstar.egg-info
+dsacstar/dsacstar.egg-info# pixi environments
+.pixi

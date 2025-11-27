@@ -16,8 +16,8 @@ import torch.optim as optim
 import torchvision.transforms.functional as TF
 from PIL import Image
 from pykdtree.kdtree import KDTree
-from qai_hub_models.models.ddrnet23_slim.model import DDRNet
-from qai_hub_models.utils.image_processing import pil_resize_pad
+# from qai_hub_models.models.ddrnet23_slim.model import DDRNet
+# from qai_hub_models.utils.image_processing import pil_resize_pad
 from torch.cuda.amp import GradScaler, autocast
 from torch.utils.data import DataLoader
 from torch.utils.data import sampler
@@ -27,7 +27,7 @@ from ace_util import get_pixel_grid, to_homogeneous, transform_kp
 from ace_loss import ReproLoss
 from ace_network import Regressor
 from dataset import CamLocDataset
-from segment import get_model, pil_undo_resize_pad
+# from segment import get_model, pil_undo_resize_pad
 
 _logger = logging.getLogger(__name__)
 
@@ -283,7 +283,7 @@ class TrainerACE:
 
         # Features are computed in evaluation mode.
         self.regressor.eval()
-        segment_model = get_model()
+        # segment_model = get_model()
         # The encoder is pretrained, so we don't compute any gradient.
         pbar = tqdm(total=self.options.training_buffer_size, desc="Filling buffer")
         h5_file = h5py.File(f"{self.dataset.root_dir}/../selected_points.h5", "r")
@@ -324,7 +324,6 @@ class TrainerACE:
                         self.device, non_blocking=True
                     )
 
-                    # segment_pixels = get_pixels_from_mask(image_ori, segment_model)
                     if segment_pixels.shape[0] <= 100:
                         continue
 
@@ -411,7 +410,8 @@ class TrainerACE:
                         features_to_select,
                         self.options.training_buffer_size - buffer_idx,
                     )
-
+                    if features_to_select <= 10 or image_mask_N1.sum() <= 10:
+                        continue
                     # Sample indices uniformly, with replacement.
                     try:
                         sample_idxs = torch.multinomial(
@@ -421,10 +421,11 @@ class TrainerACE:
                             generator=self.sampling_generator,
                         )
                     except RuntimeError:
-                        print(image_mask_N1.sum(), segment_mask.sum())
+                        # print(image_mask_N1.sum(), segment_mask.sum())
                         continue
                     pbar.update(features_to_select)
-                    assert torch.max(sample_idxs).item() < batch_data["features"].shape[0]
+                    # print(torch.max(sample_idxs).item(), batch_data["features"].shape[0])
+                    assert torch.max(sample_idxs).item() < batch_data["features"].shape[0], f"{torch.max(sample_idxs).item()} vs {batch_data['features'].shape[0]}"
 
                     # Select the data to put in the buffer.
                     for k in batch_data:
@@ -612,27 +613,54 @@ class TrainerACE:
         loss /= batch_size
 
         # We need to check if the step actually happened, since the scaler might skip optimisation steps.
-        old_optimizer_step = self.optimizer._step_count
 
         # Optimization steps.
-        self.optimizer.zero_grad(set_to_none=True)
+
+        old_scale = self.scaler.get_scale()
+        self.optimizer.zero_grad()
         self.scaler.scale(loss).backward()
+
         self.scaler.step(self.optimizer)
         self.scaler.update()
 
+        new_scale = self.scaler.get_scale()
+
+        if new_scale <= old_scale and self.scheduler is not None:
+            self.scheduler.step()
+
+        # self.optimizer.zero_grad()
+        # self.scaler.scale(loss).backward()
+        # old_optimizer_step = self.get_step_count()
+        #
+        # self.scaler.step(self.optimizer)
+        # self.scaler.update()
+
         if self.iteration % self.iterations_output == 0:
             # Print status.
-            time_since_start = time.time() - self.training_start
             fraction_valid = float(valid_mask_b1.sum() / batch_size)
-            # median_depth = float(pred_cam_coords_b31[:, 2].median())
 
             _logger.info(
                 f"Iteration: {self.iteration:6d} / Epoch {self.epoch:03d}|{self.options.epochs:03d}, "
-                f"Loss: {loss:.1f}, Valid: {fraction_valid * 100:.1f}%, Time: {time_since_start:.2f}s"
+                f"Loss: {loss:.1f}, Valid: {fraction_valid * 100:.1f}%"
             )
-        # Only step if the optimizer stepped and if we're not over-stepping the total_steps supported by the scheduler.
-        if old_optimizer_step < self.optimizer._step_count < self.scheduler.total_steps:
-            self.scheduler.step()
+        # curr_step = self.get_step_count()
+        # if old_optimizer_step < curr_step < self.scheduler.total_steps:
+        #     self.scheduler.step()
+
+    def get_step_count(self):
+        try:
+            step_count = self.optimizer.state[
+                self.optimizer.param_groups[0]["params"][0]
+            ]["step"]
+
+
+        except KeyError:
+            step_count = 0
+            print("Warning: optimizer step count not found, returning 0")
+            print(self.optimizer.state[
+                self.optimizer.param_groups[0]["params"][0]
+            ].keys())
+        return int(step_count)
 
     def save_model(self):
         # NOTE: This would save the whole regressor (encoder weights included) in full precision floats (~30MB).

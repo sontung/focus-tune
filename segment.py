@@ -10,7 +10,6 @@ import h5py
 import numpy as np
 import torch
 from PIL import Image
-from qai_hub_models.models.ddrnet23_slim.app import DDRNetApp
 from qai_hub_models.models.ddrnet23_slim.model import (
     MODEL_ASSET_VERSION,
     MODEL_ID,
@@ -22,6 +21,8 @@ from qai_hub_models.utils.args import (
     get_on_device_demo_parser,
     validate_on_device_demo_args,
 )
+from qai_hub_models.models._shared.segmentation.app import SegmentationApp
+
 from qai_hub_models.utils.asset_loaders import CachedWebModelAsset, load_image
 from qai_hub_models.utils.display import display_or_save_image
 from qai_hub_models.utils.image_processing import pil_resize_pad
@@ -66,49 +67,38 @@ def pil_undo_resize_pad(
     torch_out_image = undo_resize_pad(torch_image, orig_size_wh, scale, padding)
     return torch_out_image
 
-def get_model():
-    parser = get_model_cli_parser(DDRNet)
-    parser = get_on_device_demo_parser(parser, add_output_dir=True)
-    parser.add_argument(
-        "--image",
-        type=str,
-        default=INPUT_IMAGE_ADDRESS,
-        help="image file path or URL",
-    )
-    args = parser.parse_args([])
-    model = demo_model_from_cli_args(DDRNet, MODEL_ID, args)
-    validate_on_device_demo_args(args, MODEL_ID)
 
-    ds_dir = "datasets/Cambridge_GreatCourt"
-    images_folder = f"{ds_dir}/train/rgb"
 
-    # Load image
-    app = DDRNetApp(model)
-    classes = [2]
-    return app
-
-# Run DDRNet end-to-end on a sample image.
-# The demo will display a image with the predicted segmentation map overlaid.
 def main(is_test: bool = False):
+    model_type = DDRNet
+    model_id = MODEL_ID
+    pad_mode = "constant"
+    app_cls = SegmentationApp
+
     # Demo parameters
-    parser = get_model_cli_parser(DDRNet)
+    parser = get_model_cli_parser(model_type)
     parser = get_on_device_demo_parser(parser, add_output_dir=True)
     parser.add_argument(
         "--image",
         type=str,
-        default=INPUT_IMAGE_ADDRESS,
+        default=".",
         help="image file path or URL",
     )
     args = parser.parse_args([] if is_test else None)
-    model = demo_model_from_cli_args(DDRNet, MODEL_ID, args)
-    validate_on_device_demo_args(args, MODEL_ID)
+    model = demo_model_from_cli_args(model_type, model_id, args)
+    validate_on_device_demo_args(args, model_id)
 
-    ds_dir = "datasets/Cambridge_StMarysChurch"
+    app = app_cls(
+        model,  # type: ignore[arg-type]
+        True,
+    )
+    print("Model Loaded")
+
+    ds_dir = "datasets/Cambridge_ShopFacade"
     images_folder = f"{ds_dir}/train/rgb"
     files = glob.glob(f"{images_folder}/*.png")
 
     # Load image
-    app = DDRNetApp(model)
     classes = [2]
 
     with h5py.File(f"{ds_dir}/selected_points.h5", "w") as h5f:
